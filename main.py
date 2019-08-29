@@ -10,6 +10,8 @@ import torchvision.transforms as transforms
 
 import os
 import argparse
+import csv
+import time
 
 from models import *
 from utils import progress_bar
@@ -56,12 +58,12 @@ print('==> Building model..')
 # net = DenseNet121()
 # net = ResNeXt29_2x64d()
 # net = MobileNet()
-# net = MobileNetV2()
+net = MobileNetV2()
 # net = DPN92()
 # net = ShuffleNetG2()
 # net = SENet18()
 # net = ShuffleNetV2(1)
-net = EfficientNetB0()
+# net = EfficientNetB0()
 net = net.to(device)
 if device == 'cuda':
     net = torch.nn.DataParallel(net)
@@ -76,6 +78,8 @@ if args.resume:
     best_acc = checkpoint['acc']
     start_epoch = checkpoint['epoch']
 
+model_dir = args.save
+
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
 
@@ -86,7 +90,12 @@ def train(epoch):
     train_loss = 0
     correct = 0
     total = 0
+    batch_time_total = 0
+
+    end = time.time()
     for batch_idx, (inputs, targets) in enumerate(trainloader):
+        data_time = time.time() - end
+
         inputs, targets = inputs.to(device), targets.to(device)
         optimizer.zero_grad()
         outputs = net(inputs)
@@ -94,13 +103,20 @@ def train(epoch):
         loss.backward()
         optimizer.step()
 
+        batch_time = time.time() - end
+
         train_loss += loss.item()
         _, predicted = outputs.max(1)
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
+        batch_time_total += batch_time
+
+        end = time.time()
 
         progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
             % (train_loss/(batch_idx+1), 100.*correct/total, correct, total))
+
+    return (train_loss/(batch_idx+1), 100.*correct/total, batch_time_total/(batch_idx+1))
 
 def test(epoch):
     global best_acc
@@ -108,16 +124,25 @@ def test(epoch):
     test_loss = 0
     correct = 0
     total = 0
+    batch_time_total = 0
     with torch.no_grad():
+        end = time.time()
         for batch_idx, (inputs, targets) in enumerate(testloader):
+            data_time = time.time() - end 
+
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = net(inputs)
             loss = criterion(outputs, targets)
+
+            batch_time = time.time() - end
 
             test_loss += loss.item()
             _, predicted = outputs.max(1)
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
+            batch_time_total += batch_time
+
+            end = time.time()
 
             progress_bar(batch_idx, len(testloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
                 % (test_loss/(batch_idx+1), 100.*correct/total, correct, total))
@@ -131,12 +156,26 @@ def test(epoch):
             'acc': acc,
             'epoch': epoch,
         }
-        if not os.path.exists(args.save):
-            os.makedirs(args.save)
         torch.save(state, os.path.join(args.save, 'checkpoint.pth'))
         best_acc = acc
 
+    return (test_loss/(batch_idx+1), 100.*correct/total, batch_time_total/(batch_idx+1))
 
+# create log directory
+if not os.path.exists(model_dir):
+    os.makedirs(model_dir)
+
+# create log file
+with open(os.path.join(model_dir, "train_log.csv"), "w") as train_log_file:
+    train_log_csv = csv.writer(train_log_file)
+    train_log_csv.writerow(['epoch', 'train_loss', 'train_top1_acc', 'train_time', 'test_loss', 'test_top1_acc', 'test_time', 'cumulative_time'])
+
+start_log_time = time.time()
 for epoch in range(start_epoch, start_epoch+200):
-    train(epoch)
-    test(epoch)
+    train_epoch_log = train(epoch)
+    test_epoch_log = test(epoch)
+
+    # append to log
+    with open(os.path.join(model_dir, "train_log.csv"), "a") as train_log_file:
+        train_log_csv = csv.writer(train_log_file)
+        train_log_csv.writerow(((epoch,) + train_epoch_log + test_epoch_log + (time.time() - start_log_time,))) 
