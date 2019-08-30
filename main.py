@@ -12,12 +12,14 @@ import os
 import argparse
 import csv
 import time
+import shutil
 
 from models import *
 from utils import progress_bar
 
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
+parser.add_argument('--arch', default="MobileNetV2", help='model architecture')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
 parser.add_argument('--save', default='./checkpoint', type=str, help='path to save model')
@@ -58,12 +60,13 @@ print('==> Building model..')
 # net = DenseNet121()
 # net = ResNeXt29_2x64d()
 # net = MobileNet()
-net = MobileNetV2()
+# net = MobileNetV2()
 # net = DPN92()
 # net = ShuffleNetG2()
 # net = SENet18()
 # net = ShuffleNetV2(1)
 # net = EfficientNetB0()
+net = locals()[args.arch]()
 net = net.to(device)
 if device == 'cuda':
     net = torch.nn.DataParallel(net)
@@ -149,17 +152,36 @@ def test(epoch):
 
     # Save checkpoint.
     acc = 100.*correct/total
-    if acc > best_acc:
-        print('Saving..')
-        state = {
-            'net': net.state_dict(),
-            'acc': acc,
-            'epoch': epoch,
-        }
-        torch.save(state, os.path.join(args.save, 'checkpoint.pth'))
-        best_acc = acc
+    is_best = acc > best_acc
+    best_acc = max(acc, best_acc)
+    if is_best:
+        try:
+            torch.save(model, os.path.join(model_dir, "model.pth"))
+        except: 
+            print("WARNING: Unable to save model.pth")
+        try:
+            torch.save(model.state_dict(), os.path.join(model_dir, "weights.pth"))
+        except: 
+            print("WARNING: Unable to save weights.pth")
 
+    save_checkpoint({
+        'epoch': epoch + 1,
+        'arch': args.arch,
+        'state_dict': net.state_dict(),
+        'best_acc1': best_acc,
+        'optimizer' : optimizer,
+        #'lr_scheduler' : lr_scheduler,
+    }, is_best, model_dir)
+    
     return (test_loss/(batch_idx+1), 100.*correct/total, batch_time_total/(batch_idx+1))
+
+def save_checkpoint(state, is_best, dir_path, filename='checkpoint.pth.tar'):
+    torch.save(state, os.path.join(dir_path, filename))
+    if is_best:
+        shutil.copyfile(os.path.join(dir_path, filename), os.path.join(dir_path, 'model_best.pth.tar'))
+        
+    if (state['epoch']-1)%10 == 0:
+        shutil.copyfile(os.path.join(dir_path, filename), os.path.join(dir_path, 'checkpoint_' + str(state['epoch']-1) + '.pth.tar'))
 
 # create log directory
 if not os.path.exists(model_dir):
